@@ -6,12 +6,23 @@ from datetime import datetime, timedelta
 from dateutil.relativedelta import relativedelta
 from teller.model import Transaction, AccountType
 
-TARGET_FI = 'BMO'
+TARGET_FI = 'BMO_2022'
 
 overrideDuplicates = True # True = assume all 'duplicate' transactions are valid
 debug = False # prints out one parsed PDF for you to manually test regex on
 
 regexes = {
+    'COMMON' : {
+        'cardnum': (r"(?P<card_number>([0-9]{4} ){3}[0-9]{4})"),
+    },
+    'BMO_2022': {
+        'txn': (r"^(?P<dates>(?:\w{3}(\.|)+ \d{1,2}\s*){2})"
+            r"(?P<description>.+)\s"
+            r"(?P<amount>-?[\d,]+\.\d{2})(?P<cr>(\-|\s*CR))?"),
+        'startyear': r'PERIOD COVERED BY THIS STATEMENT\s\w+\.?\s{1}\d+\,\s{1}(?P<year>[0-9]{4})',
+        'openbal': r'Previous Balance.*(?P<balance>-?\$[\d,]+\.\d{2})(?P<cr>(\-|\s?CR))?',
+        'closingbal': r'(?:New) Balance\s.*(?P<balance>-?\$[\d,]+\.\d{2})(?P<cr>(\-|\s?CR))?'
+    },
     'BMO': {
         'txn': (r"^(?P<dates>(?:\w{3}(\.|)+ \d{1,2}\s*){2})"
             r"(?P<description>.+)\s"
@@ -78,6 +89,7 @@ def _parse_visa(pdf_path):
             print(text)
             exit()
 
+        card_number = _get_card_number(text, True)
         year = _get_start_year(text, TARGET_FI)
         opening_bal = _get_opening_bal(text, TARGET_FI)
         closing_bal = _get_closing_bal(text, TARGET_FI)
@@ -121,6 +133,7 @@ def _parse_visa(pdf_path):
                 match_dict['description'] = match_dict['description'].split('$', 1)[0]
 
             transaction = Transaction(AccountType[TARGET_FI],
+                                      card_number,
                                       str(date.date().isoformat()),
                                       match_dict['description'],
                                       amount)
@@ -160,6 +173,16 @@ def _validate(closing_bal, opening_bal, transactions):
         for t in sorted(list(transactions), key=lambda t: t.date):
             print(t)
         raise AssertionError("Discrepancy found, bad parse :(. Not all transcations are accounted for, validate your transaction regex.")
+
+def _get_card_number(pdf_text, censor=True):
+    print("Getting card number...")
+    match = re.search(regexes['COMMON']['cardnum'], pdf_text)
+    cardnum = match.groupdict()['card_number']
+    if (censor):
+        parts = cardnum.split(" ")
+        cardnum = parts[0] + " xxxx xxxx " + parts[-1] # Keep the first last part of the card number (e.g. 1234 xxxx xxxx 7890)
+    print("Card Number: %s" % cardnum)
+    return cardnum
 
 def _get_start_year(pdf_text, fi):
     print("Getting year...")
