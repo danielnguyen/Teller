@@ -6,8 +6,6 @@ from datetime import datetime, timedelta
 from dateutil.relativedelta import relativedelta
 from teller.model import Transaction, AccountType
 
-TARGET_FI = 'BMO'
-
 overrideDuplicates = True # True = assume all 'duplicate' transactions are valid
 debug = False # prints out one parsed PDF for you to manually test regex on
 
@@ -16,6 +14,7 @@ regexes = {
         'cardnum': (r"(?P<card_number>(?:X{4} |[0-9]{4} ){3}[0-9]{4})"),
     },
     'BMO_2022': {
+        'fi_detect': "^(?P<fi>BMO)",
         'txn': (r"^(?P<dates>(?:\w{3}(\.|)+ \d{1,2}\s*){2})"
             r"(?P<description>.+)\s"
             r"(?P<amount>-?[\d,]+\.\d{2})(?P<cr>(\-|\s*CR))?"),
@@ -24,6 +23,7 @@ regexes = {
         'closingbal': r'(?:New) Balance\s.*(?P<balance>-?\$[\d,]+\.\d{2})(?P<cr>(\-|\s?CR))?'
     },
     'BMO': {
+        'fi_detect': "^(?P<fi>BMO)",
         'txn': (r"^(?P<dates>(?:\w{3}(\.|)+ \d{1,2}\s*){2})"
             r"(?P<description>.+)\s"
             r"(?P<amount>-?[\d,]+\.\d{2})(?P<cr>(\-|\s*CR))?"),
@@ -32,6 +32,7 @@ regexes = {
         'closingbal': r'(?:Total) balance\s.*(?P<balance>-?\$[\d,]+\.\d{2})(?P<cr>(\-|\s?CR))?'
     },
     'RBC': {
+        'fi_detect': "^(?P<fi>RBC)", # UNTESTED
         'txn': (r"^(?P<dates>(?:\w{3} \d{2} ){2})"
             r"(?P<description>.+)\s"    
             r"(?P<amount>-?\$[\d,]+\.\d{2}-?)(?P<cr>(\-|\s?CR))?"),
@@ -40,6 +41,7 @@ regexes = {
         'closingbal': r'(?:NEW|CREDIT) BALANCE (?P<balance>-?\$[\d,]+\.\d{2})(?P<cr>(\-|\s?CR))?'
     }, 
     'MFC': { 
+        'fi_detect': "^(?P<fi>Manulife)", # UNTESTED
         'txn': (r"^(?P<dates>(?:\d{2}\/\d{2} ){2})"
             r"(?P<description>.+)\s"
             r"(?P<amount>-?\$[\d,]+\.\d{2})(?P<cr>(\-|\s?CR))?"),
@@ -48,6 +50,7 @@ regexes = {
         'closingbal': r'(?:New) Balance (?P<balance>-?\$[\d,]+\.\d{2})(?P<cr>(\-|\s?CR))?'
     },
     'TD': {
+        'fi_detect': "^(?P<fi>TD)", # UNTESTED
         'txn': (r"(?P<dates>(?:\w{3} \d{1,2} ){2})"
             r"(?P<description>.+)\s"    
             r"(?P<amount>-?\$[\d,]+\.\d{2}-?)(?P<cr>(\-|\s?CR))?"),
@@ -56,6 +59,7 @@ regexes = {
         'closingbal': r'(?:NEW|CREDIT) BALANCE (?P<balance>\-?\s?\$[\d,]+\.\d{2})(?P<cr>(\-|\s?CR))?'
     },  
     'AMEX': {
+        'fi_detect': "^(?P<fi>AMEX)", # UNTESTED
         'txn': (r"(?P<dates>(?:\w{3} \d{1,2} ){2})"
             r"(?P<description>.+)\s"    
             r"(?P<amount>-?[\d,]+\.\d{2}-?)(?P<cr>(\-|\s?CR))?"),
@@ -69,14 +73,13 @@ def get_transactions(data_directory):
     result = set()
     for pdf_path in Path(data_directory).rglob('*.pdf'):
         try: 
-            if (pdf_path.parts[-2] == TARGET_FI):
-                result |= _parse_visa(pdf_path)
+            result |= _parse_pdf(pdf_path)
         except Exception as e:
             print("Error for %s" % pdf_path)
             print(e)
     return result 
 
-def _parse_visa(pdf_path):
+def _parse_pdf(pdf_path):
     result = set()
     text = ""
     with pdfplumber.open(pdf_path) as pdf:
@@ -86,71 +89,78 @@ def _parse_visa(pdf_path):
             text += page.extract_text(x_tolerance=1)
 
         if (debug):
+            _detect_fi(text)
             print(text)
             exit()
 
-        card_number = _get_card_number(text, True)
-        year = _get_start_year(text, TARGET_FI)
-        opening_bal = _get_opening_bal(text, TARGET_FI)
-        closing_bal = _get_closing_bal(text, TARGET_FI)
-        # add_seconds = 0
-        
-        endOfYearWarning = False
+        TARGET_FI = _detect_fi(text)
 
-        # debugging transaction mapping - all 3 regex in 'txn' have to find a result in order for it to be considered a 'match'
-        for match in re.finditer(regexes[TARGET_FI]['txn'], text, re.MULTILINE):
-            match_dict = match.groupdict()
-            date = match_dict['dates'].replace('/', ' ') # change format to standard: 03/13 -> 03 13
-            date = date.split(' ')[0:2]  # Aug. 10 Aug. 13 -> ['Aug.', '10']
-            date[0] = date[0].strip('.') # Aug. -> Aug
-            date.append(str(year))
-            date = ' '.join(date) # ['Aug', '10', '2021'] -> Aug 10 2021
+        if TARGET_FI:
+            card_number = _get_card_number(text, True)
+            year = _get_start_year(text, TARGET_FI)
+            opening_bal = _get_opening_bal(text, TARGET_FI)
+            closing_bal = _get_closing_bal(text, TARGET_FI)
+            # add_seconds = 0
             
-            try:
-                date = datetime.strptime(date, '%b %d %Y') # try Aug 10 2021 first
-            except: # yes I know this is horrible, but this script runs once if you download your .csvs monthly, what do you want from me
-                date = datetime.strptime(date, '%m %d %Y') # if it fails, 08 10 2021
+            endOfYearWarning = False
 
-            # need to account for current year (Jan) and previous year (Dec) in statements 
-            endOfYearCheck = date.strftime("%m")
+            # debugging transaction mapping - all 3 regex in 'txn' have to find a result in order for it to be considered a 'match'
+            for match in re.finditer(regexes[TARGET_FI]['txn'], text, re.MULTILINE):
+                match_dict = match.groupdict()
+                date = match_dict['dates'].replace('/', ' ') # change format to standard: 03/13 -> 03 13
+                date = date.split(' ')[0:2]  # Aug. 10 Aug. 13 -> ['Aug.', '10']
+                date[0] = date[0].strip('.') # Aug. -> Aug
+                date.append(str(year))
+                date = ' '.join(date) # ['Aug', '10', '2021'] -> Aug 10 2021
+                
+                try:
+                    date = datetime.strptime(date, '%b %d %Y') # try Aug 10 2021 first
+                except: # yes I know this is horrible, but this script runs once if you download your .csvs monthly, what do you want from me
+                    date = datetime.strptime(date, '%m %d %Y') # if it fails, 08 10 2021
 
-            if (endOfYearCheck == '12' and endOfYearWarning == False):
-                endOfYearWarning = True
-            if (endOfYearCheck == '01' and endOfYearWarning):
-                date = date + relativedelta(years = 1)
+                # need to account for current year (Jan) and previous year (Dec) in statements 
+                endOfYearCheck = date.strftime("%m")
 
-            if (match_dict['cr']):
-                print("Credit balance found in transaction: '%s'" % match_dict['amount'])
-                amount = -float("-" + match_dict['amount'].replace('$', '').replace(',', ''))
-            else:
-                amount = -float(match_dict['amount'].replace('$', '').replace(',', ''))
+                if (endOfYearCheck == '12' and endOfYearWarning == False):
+                    endOfYearWarning = True
+                if (endOfYearCheck == '01' and endOfYearWarning):
+                    date = date + relativedelta(years = 1)
 
-            # checks description regex
-            if ('$' in match_dict['description'] and TARGET_FI != 'BMO'): # BMO doesn't have $'s in their descriptions, so this is safe 
-                print("************" + match_dict['description'])
-                newAmount = re.search(r'(?P<amount>-?\$[\d,]+\.\d{2}-?)(?P<cr>(\-|\s?CR))?', match_dict['description'])
-                amount = -float(newAmount['amount'].replace('$', '').replace(',', ''))
-                match_dict['description'] = match_dict['description'].split('$', 1)[0]
-
-            transaction = Transaction(AccountType[TARGET_FI],
-                                      card_number,
-                                      str(date.date().isoformat()),
-                                      match_dict['description'],
-                                      amount)
-            if (transaction in result):
-                if (overrideDuplicates):
-                    transaction.description = transaction.description + " 2"    
-                    result.add(transaction)
+                if (match_dict['cr']):
+                    print("Credit balance found in transaction: '%s'" % match_dict['amount'])
+                    amount = -float("-" + match_dict['amount'].replace('$', '').replace(',', ''))
                 else:
-                    prompt = input("Duplicate transaction found for %s, on %s for %f. Do you want to add this again? " % (transaction.description, transaction.date, transaction.amount)).lower()
-                    if (prompt == 'y'):
+                    amount = -float(match_dict['amount'].replace('$', '').replace(',', ''))
+
+                # checks description regex
+                if ('$' in match_dict['description'] and TARGET_FI != 'BMO'): # BMO doesn't have $'s in their descriptions, so this is safe 
+                    print("************" + match_dict['description'])
+                    newAmount = re.search(r'(?P<amount>-?\$[\d,]+\.\d{2}-?)(?P<cr>(\-|\s?CR))?', match_dict['description'])
+                    amount = -float(newAmount['amount'].replace('$', '').replace(',', ''))
+                    match_dict['description'] = match_dict['description'].split('$', 1)[0]
+
+                transaction = Transaction(AccountType[TARGET_FI],
+                                        card_number,
+                                        str(date.date().isoformat()),
+                                        match_dict['description'],
+                                        amount)
+                if (transaction in result):
+                    if (overrideDuplicates):
                         transaction.description = transaction.description + " 2"    
                         result.add(transaction)
                     else:
-                        print("Ignoring!")
-            else:
-                result.add(transaction)
-    _validate(closing_bal, opening_bal, result)
+                        prompt = input("Duplicate transaction found for %s, on %s for %f. Do you want to add this again? " % (transaction.description, transaction.date, transaction.amount)).lower()
+                        if (prompt == 'y'):
+                            transaction.description = transaction.description + " 2"    
+                            result.add(transaction)
+                        else:
+                            print("Ignoring!")
+                else:
+                    result.add(transaction)
+
+            _validate(closing_bal, opening_bal, result)
+        else:
+            print(f"Could not automatically detect financial institution for: {pdf_path} (skipping)")
     return result
 
 def _validate(closing_bal, opening_bal, transactions):
@@ -174,6 +184,20 @@ def _validate(closing_bal, opening_bal, transactions):
             print(t)
         raise AssertionError("Discrepancy found, bad parse :(. Not all transcations are accounted for, validate your transaction regex.")
 
+def _detect_fi(pdf_text):
+    print("Detecting financial institution from pdf...")
+    found_fi = None
+    for (fi, fi_regexes) in regexes.items():
+        if not found_fi and 'fi_detect' in fi_regexes:
+            match = re.search(fi_regexes['fi_detect'], pdf_text, re.IGNORECASE)
+            # Check both BMO/BMO_2022 based on startyear regex
+            if (match and match.groupdict()['fi']) \
+                and (not fi.startswith('BMO') \
+                     or (fi.startswith('BMO') and _get_start_year(pdf_text, fi))):
+                found_fi = fi
+                print(f"Found matching FI: {fi}")
+    return found_fi
+
 def _get_card_number(pdf_text, censor=True):
     print("Getting card number...")
     match = re.search(regexes['COMMON']['cardnum'], pdf_text, re.IGNORECASE)
@@ -187,15 +211,16 @@ def _get_card_number(pdf_text, censor=True):
 def _get_start_year(pdf_text, fi):
     print("Getting year...")
     match = re.search(regexes[fi]['startyear'], pdf_text, re.IGNORECASE)
-    year = int(match.groupdict()['year'].replace(', ', ''))
-    print("YEAR IS: %d" % year)
-    return year
+    if (match and match.groupdict()['year']):
+        year = int(match.groupdict()['year'].replace(', ', ''))
+        print("YEAR IS: %d" % year)
+        return year
 
 
 def _get_opening_bal(pdf_text, fi):
     print("Getting opening balance...")
     match = re.search(regexes[fi]['openbal'], pdf_text)
-    if (match.groupdict()['cr'] and '-' not in match.groupdict()['balance']):
+    if (match and match.groupdict()['cr'] and '-' not in match.groupdict()['balance']):
         balance = float("-" + match.groupdict()['balance'].replace('$', ''))
         print("Patched credit balance found for opening balance: %f" % balance)
         return balance
@@ -208,7 +233,7 @@ def _get_opening_bal(pdf_text, fi):
 def _get_closing_bal(pdf_text, fi):
     print("Getting closing balance...")
     match = re.search(regexes[fi]['closingbal'], pdf_text)
-    if (match.groupdict()['cr'] and '-' not in match.groupdict()['balance']):
+    if (match and match.groupdict()['cr'] and '-' not in match.groupdict()['balance']):
         balance = float("-" + match.groupdict()['balance'].replace('$', ''))
         print("Patched credit balance found for closing balance: %f" % balance)
         return balance
