@@ -1,4 +1,6 @@
 chardet==5.0.0
+mariadb==1.1.8
+packaging==23.2
 pdfminer.six==20200517
 pdfplumber==0.5.23
 Pillow==9.2.0

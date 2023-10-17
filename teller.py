@@ -1,6 +1,8 @@
 import os
 import argparse
+import mariadb
 import sqlite3
+import sys
 
 from teller import pdf_processor
 from teller import db_manager
@@ -8,33 +10,66 @@ from teller import db_manager
 
 def main():
     arg_parser = argparse.ArgumentParser()
-    arg_parser.add_argument('database')
-    arg_parser.add_argument('-d', dest='directory', required=False)
+    arg_parser.add_argument('-t', '--db-type', dest='db_type', choices=['MARIADB', 'SQLITE'], required=True)
+    arg_parser.add_argument('-n', '--db-name', dest='db_name', required=True)
+    arg_parser.add_argument('-H', '--db-host', dest='db_host', required=False)
+    arg_parser.add_argument('-u', '--db-username', dest='db_username', required=False)
+    arg_parser.add_argument('-p', '--db-password', dest='db_password', required=False)
+    arg_parser.add_argument('-P', '--db-port', dest='db_port', required=False)
+    arg_parser.add_argument('-d', dest='directory', default='statements', required=False)
     args = arg_parser.parse_args()
-
-    directory = 'statements'
 
     if args.directory:
         assert os.path.exists(args.directory)
         directory = args.directory
 
-    with sqlite3.connect(args.database) as db_conn:
+    if args.db_type == 'MARIADB':
+        if (args.db_username and args.db_password and args.db_host and args.db_port):
+            try:
+                conn = mariadb.connect(
+                    user=args.db_username,
+                    password=args.db_password,
+                    host=args.db_host,
+                    port=int(args.db_port),
+                    autocommit=True,
+                    database=args.db_name
+                )
+            except mariadb.Error as e:
+                print(f"Error connecting to MariaDB Platform: {e}")
+                sys.exit(1)
+
+            cursor = conn.cursor()     
+        else:
+            print(f"Error connecting to MariaDB: missing configuration")
+            sys.exit(1)
+    elif args.db_type == 'SQLITE':
+        cursor = sqlite3.connect(f"{args.db_name}.db")
+    else:
+        print(f"Error connecting to database: Unknown DB Type provided ({args.db_type})")
+        sys.exit(1)
+
+    with cursor:
 
         try:
-            db_manager.create_db(db_conn)
-        except sqlite3.OperationalError:  # db exists
+            db_manager.create_table(cursor)
+        except (mariadb.Error, sqlite3.OperationalError):  # db exists
             pass
-
 
         print(f"Searching for pdfs in '{directory}'...")
         found_trans = pdf_processor.get_transactions(directory) 
-        print(f"Found {len(found_trans)} transactions in pdf statements") 
+        if len(found_trans) > 0:
+            print(f"Found {len(found_trans)} transactions in pdf statements") 
+            to_add = found_trans
 
-        existing_trans = db_manager.get_existing_trans(db_conn)
-        to_add = found_trans - existing_trans
+            existing_trans = db_manager.get_transactions(cursor)
+            # Remove existing transactions
+            if existing_trans is not None:
+                to_add = to_add - existing_trans
 
-        print(f"Adding {len(to_add)} new transactions to db...")
-        db_manager.add_to_db(db_conn, to_add)
+            print(f"Adding {len(to_add)} new transactions to db...")
+            db_manager.add_transactions(cursor, to_add)
+        else:
+            print(f"No new transactions found.")
 
 
 if __name__ == '__main__':

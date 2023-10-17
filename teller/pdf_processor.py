@@ -6,14 +6,14 @@ from datetime import datetime, timedelta
 from dateutil.relativedelta import relativedelta
 from teller.model import Transaction, AccountType
 
-TARGET_FI = 'BMO_2022'
+TARGET_FI = 'BMO'
 
 overrideDuplicates = True # True = assume all 'duplicate' transactions are valid
 debug = False # prints out one parsed PDF for you to manually test regex on
 
 regexes = {
     'COMMON' : {
-        'cardnum': (r"(?P<card_number>([0-9]{4} ){3}[0-9]{4})"),
+        'cardnum': (r"(?P<card_number>(?:X{4} |[0-9]{4} ){3}[0-9]{4})"),
     },
     'BMO_2022': {
         'txn': (r"^(?P<dates>(?:\w{3}(\.|)+ \d{1,2}\s*){2})"
@@ -69,7 +69,7 @@ def get_transactions(data_directory):
     result = set()
     for pdf_path in Path(data_directory).rglob('*.pdf'):
         try: 
-            if pdf_path.parts[-2] == TARGET_FI:
+            if (pdf_path.parts[-2] == TARGET_FI):
                 result |= _parse_visa(pdf_path)
         except Exception as e:
             print("Error for %s" % pdf_path)
@@ -176,11 +176,11 @@ def _validate(closing_bal, opening_bal, transactions):
 
 def _get_card_number(pdf_text, censor=True):
     print("Getting card number...")
-    match = re.search(regexes['COMMON']['cardnum'], pdf_text)
+    match = re.search(regexes['COMMON']['cardnum'], pdf_text, re.IGNORECASE)
     cardnum = match.groupdict()['card_number']
     if (censor):
         parts = cardnum.split(" ")
-        cardnum = parts[0] + " xxxx xxxx " + parts[-1] # Keep the first last part of the card number (e.g. 1234 xxxx xxxx 7890)
+        cardnum = "xxxx xxxx xxxx " + parts[-1] # Keep the first last part of the card number (e.g. xxxx xxxx xxxx 7890)
     print("Card Number: %s" % cardnum)
     return cardnum
 
