@@ -10,13 +10,13 @@ from teller import db_manager
 
 def main():
     arg_parser = argparse.ArgumentParser()
-    arg_parser.add_argument('-t', '--db-type', dest='db_type', choices=['MARIADB', 'SQLITE'], required=True)
-    arg_parser.add_argument('-n', '--db-name', dest='db_name', required=True)
-    arg_parser.add_argument('-H', '--db-host', dest='db_host', required=False)
-    arg_parser.add_argument('-u', '--db-username', dest='db_username', required=False)
-    arg_parser.add_argument('-p', '--db-password', dest='db_password', required=False)
-    arg_parser.add_argument('-P', '--db-port', dest='db_port', required=False)
-    arg_parser.add_argument('-d', dest='directory', default='statements', required=False)
+    arg_parser.add_argument('-t', '--db-type', dest='db_type', choices=['MARIADB', 'SQLITE'], default='SQLITE')
+    arg_parser.add_argument('-n', '--db-name', dest='db_name', default='teller')
+    arg_parser.add_argument('-H', '--db-host', dest='db_host')
+    arg_parser.add_argument('-u', '--db-username', dest='db_username')
+    arg_parser.add_argument('-p', '--db-password', dest='db_password')
+    arg_parser.add_argument('-P', '--db-port', dest='db_port')
+    arg_parser.add_argument('-d', '--pdf-dir', dest='directory', default='statements')
     args = arg_parser.parse_args()
 
     if args.directory:
