@@ -10,70 +10,66 @@ from teller import db_manager
 
 def main():
     arg_parser = argparse.ArgumentParser()
-    arg_parser.add_argument('database')
-    arg_parser.add_argument('-d', dest='directory', required=False)
+    arg_parser.add_argument('-t', '--db-type', dest='db_type', choices=['MARIADB', 'SQLITE'], required=True)
+    arg_parser.add_argument('-n', '--db-name', dest='db_name', required=True)
+    arg_parser.add_argument('-H', '--db-host', dest='db_host', required=False)
+    arg_parser.add_argument('-u', '--db-username', dest='db_username', required=False)
+    arg_parser.add_argument('-p', '--db-password', dest='db_password', required=False)
+    arg_parser.add_argument('-P', '--db-port', dest='db_port', required=False)
+    arg_parser.add_argument('-d', dest='directory', default='statements', required=False)
     args = arg_parser.parse_args()
-
-    directory = 'statements'
 
     if args.directory:
         assert os.path.exists(args.directory)
         directory = args.directory
 
-    db_type = os.environ.get('DB_TYPE') # One of DatabaseType
-    
-    if (db_type == 'MARIADB'):
-        username = os.environ.get('DB_USERNAME')
-        password = os.environ.get('DB_PASSWORD')
-        host = os.environ.get('DB_HOST')
-        port = os.environ.get('DB_PORT')
-        db_name = os.environ.get('DB_NAME')
-
-        req_params = username and password and host and port and db_name
-
-        if (req_params):
-            # Connect to MariaDB Platform
+    if args.db_type == 'MARIADB':
+        if (args.db_username and args.db_password and args.db_host and args.db_port):
             try:
                 conn = mariadb.connect(
-                    user="db_user",
-                    password="db_user_passwd",
-                    host="192.0.2.1",
-                    port=3306,
-                    database="employees"
-
+                    user=args.db_username,
+                    password=args.db_password,
+                    host=args.db_host,
+                    port=int(args.db_port),
+                    autocommit=True,
+                    database=args.db_name
                 )
             except mariadb.Error as e:
                 print(f"Error connecting to MariaDB Platform: {e}")
                 sys.exit(1)
 
-            # Get Cursor
-            db_conn = conn.cursor()
+            cursor = conn.cursor()     
         else:
             print(f"Error connecting to MariaDB: missing configuration")
             sys.exit(1)
-    elif (db_type == 'SQLITE'):
-        db_conn = sqlite3.connect(args.database)
-        try:
-            db_manager.create_db(db_conn)
-        except sqlite3.OperationalError:  # db exists
-            pass
+    elif args.db_type == 'SQLITE':
+        cursor = sqlite3.connect(f"{args.db_name}.db")
     else:
-        print(f"Error connecting to database: Environment Variable 'DB_TYPE' not defined.")
+        print(f"Error connecting to database: Unknown DB Type provided ({args.db_type})")
         sys.exit(1)
 
-    if db_conn is None:
-        print(f"Error connecting to database.")
-        sys.exit(1)
+    with cursor:
 
-    print(f"Searching for pdfs in '{directory}'...")
-    found_trans = pdf_processor.get_transactions(directory) 
-    print(f"Found {len(found_trans)} transactions in pdf statements") 
+        try:
+            db_manager.create_table(cursor)
+        except (mariadb.Error, sqlite3.OperationalError):  # db exists
+            pass
 
-    existing_trans = db_manager.get_existing_trans(db_conn)
-    to_add = found_trans - existing_trans
+        print(f"Searching for pdfs in '{directory}'...")
+        found_trans = pdf_processor.get_transactions(directory) 
+        if len(found_trans) > 0:
+            print(f"Found {len(found_trans)} transactions in pdf statements") 
+            to_add = found_trans
 
-    print(f"Adding {len(to_add)} new transactions to db...")
-    db_manager.add_to_db(db_conn, to_add)
+            existing_trans = db_manager.get_transactions(cursor)
+            # Remove existing transactions
+            if existing_trans is not None:
+                to_add = to_add - existing_trans
+
+            print(f"Adding {len(to_add)} new transactions to db...")
+            db_manager.add_transactions(cursor, to_add)
+        else:
+            print(f"No new transactions found.")
 
 
 if __name__ == '__main__':
