@@ -11,10 +11,11 @@ debug = False # prints out one parsed PDF for you to manually test regex on
 
 regexes = {
     'COMMON' : {
-        'cardnum': (r"(?P<card_number>(?:X{4} |[0-9]{4} ){3}[0-9]{4})"),
+        'accnum_cc': (r"(?P<account_number>(?:X{4} |[0-9]{4} ){3}[0-9]{4})"), # XXXX XXXX XXXX 1234 or 1234 5678 9010 1234
+        'accnum_bank': (r"(?P<account_number>[0-9]{5}-[0-9]{7})") # 01234-5678987
     },
     'BMO_2022': {
-        'fi_detect': "^(?P<fi>BMO)",
+        'fidetect': "^(?P<fi>BMO)",
         'txn': (r"^(?P<dates>(?:\w{3}(\.|)+ \d{1,2}\s*){2})"
             r"(?P<description>.+)\s"
             r"(?P<amount>-?[\d,]+\.\d{2})(?P<cr>(\-|\s*CR))?"),
@@ -23,7 +24,7 @@ regexes = {
         'closingbal': r'(?:New) Balance\s.*(?P<balance>-?\$[\d,]+\.\d{2})(?P<cr>(\-|\s?CR))?'
     },
     'BMO': {
-        'fi_detect': "^(?P<fi>BMO)",
+        'fidetect': "^(?P<fi>BMO)",
         'txn': (r"^(?P<dates>(?:\w{3}(\.|)+ \d{1,2}\s*){2})"
             r"(?P<description>.+)\s"
             r"(?P<amount>-?[\d,]+\.\d{2})(?P<cr>(\-|\s*CR))?"),
@@ -32,16 +33,16 @@ regexes = {
         'closingbal': r'(?:Total) balance\s.*(?P<balance>-?\$[\d,]+\.\d{2})(?P<cr>(\-|\s?CR))?'
     },
     'RBC': {
-        'fi_detect': "^(?P<fi>RBC)", # UNTESTED
-        'txn': (r"^(?P<dates>(?:\w{3} \d{2} ){2})"
+        'fidetect': "^(?P<fi>Royal Bank of Canada)",
+        'txn': (r"(?P<dates>(?:\d{2} \w{3})) "
             r"(?P<description>.+)\s"    
             r"(?P<amount>-?\$[\d,]+\.\d{2}-?)(?P<cr>(\-|\s?CR))?"),
         'startyear': r'STATEMENT FROM .+(?P<year>-?\,.[0-9][0-9][0-9][0-9])',
-        'openbal': r'(PREVIOUS|Previous) (STATEMENT|ACCOUNT|Account) (BALANCE|Balance) (?P<balance>-?\$[\d,]+\.\d{2})(?P<cr>(\-|\s?CR))?',
-        'closingbal': r'(?:NEW|CREDIT) BALANCE (?P<balance>-?\$[\d,]+\.\d{2})(?P<cr>(\-|\s?CR))?'
+        'openbal': r'Opening balance (?P<balance>[+-]?[0-9]{1,3}(?:,?[0-9]{3})*\.[0-9]{2})(?P<cr>(\-|\s?CR))?',
+        'closingbal': r'Closing balance [$]?(?P<balance>[+-]?[0-9]{1,3}(?:,?[0-9]{3})*\.[0-9]{2})(?P<cr>(\-|\s?CR))?'
     }, 
     'MFC': { 
-        'fi_detect': "^(?P<fi>Manulife)", # UNTESTED
+        'fidetect': "^(?P<fi>Manulife)", # UNTESTED
         'txn': (r"^(?P<dates>(?:\d{2}\/\d{2} ){2})"
             r"(?P<description>.+)\s"
             r"(?P<amount>-?\$[\d,]+\.\d{2})(?P<cr>(\-|\s?CR))?"),
@@ -50,7 +51,7 @@ regexes = {
         'closingbal': r'(?:New) Balance (?P<balance>-?\$[\d,]+\.\d{2})(?P<cr>(\-|\s?CR))?'
     },
     'TD': {
-        'fi_detect': "^(?P<fi>TD)", # UNTESTED
+        'fidetect': "^(?P<fi>TD)", # UNTESTED
         'txn': (r"(?P<dates>(?:\w{3} \d{1,2} ){2})"
             r"(?P<description>.+)\s"    
             r"(?P<amount>-?\$[\d,]+\.\d{2}-?)(?P<cr>(\-|\s?CR))?"),
@@ -59,7 +60,7 @@ regexes = {
         'closingbal': r'(?:NEW|CREDIT) BALANCE (?P<balance>\-?\s?\$[\d,]+\.\d{2})(?P<cr>(\-|\s?CR))?'
     },  
     'AMEX': {
-        'fi_detect': "^(?P<fi>AMEX)", # UNTESTED
+        'fidetect': "^(?P<fi>AMEX)", # UNTESTED
         'txn': (r"(?P<dates>(?:\w{3} \d{1,2} ){2})"
             r"(?P<description>.+)\s"    
             r"(?P<amount>-?[\d,]+\.\d{2}-?)(?P<cr>(\-|\s?CR))?"),
@@ -96,7 +97,7 @@ def _parse_pdf(pdf_path):
         TARGET_FI = _detect_fi(text)
 
         if TARGET_FI:
-            card_number = _get_card_number(text, True)
+            account_number = _get_account_number(text, True)
             year = _get_start_year(text, TARGET_FI)
             opening_bal = _get_opening_bal(text, TARGET_FI)
             closing_bal = _get_closing_bal(text, TARGET_FI)
@@ -140,7 +141,7 @@ def _parse_pdf(pdf_path):
                     match_dict['description'] = match_dict['description'].split('$', 1)[0]
 
                 transaction = Transaction(AccountType[TARGET_FI],
-                                        card_number,
+                                        account_number,
                                         str(date.date().isoformat()),
                                         match_dict['description'],
                                         amount)
@@ -188,8 +189,8 @@ def _detect_fi(pdf_text):
     print("Detecting financial institution from pdf...")
     found_fi = None
     for (fi, fi_regexes) in regexes.items():
-        if not found_fi and 'fi_detect' in fi_regexes:
-            match = re.search(fi_regexes['fi_detect'], pdf_text, re.IGNORECASE)
+        if not found_fi and 'fidetect' in fi_regexes:
+            match = re.search(fi_regexes['fidetect'], pdf_text, re.IGNORECASE)
             # Check both BMO/BMO_2022 based on startyear regex
             if (match and match.groupdict()['fi']) \
                 and (not fi.startswith('BMO') \
@@ -198,15 +199,21 @@ def _detect_fi(pdf_text):
                 print(f"Found matching FI: {fi}")
     return found_fi
 
-def _get_card_number(pdf_text, censor=True):
-    print("Getting card number...")
-    match = re.search(regexes['COMMON']['cardnum'], pdf_text, re.IGNORECASE)
-    cardnum = match.groupdict()['card_number']
-    if (censor):
-        parts = cardnum.split(" ")
-        cardnum = "xxxx xxxx xxxx " + parts[-1] # Keep the first last part of the card number (e.g. xxxx xxxx xxxx 7890)
-    print("Card Number: %s" % cardnum)
-    return cardnum
+def _get_account_number(pdf_text, censor=True):
+    print("Getting account number...")
+    found_accnum = None
+    for (accnum_type, accnum_regex) in regexes['COMMON'].items():
+        match = re.search(accnum_regex, pdf_text, re.IGNORECASE)
+        if (match):
+            accnum = match.groupdict()['account_number']
+            if (censor):
+                if (accnum_type == "accnum_cc"):
+                    accnum = "xxxx xxxx xxxx " + accnum[-5:-1] # Keep the last part of the card number (e.g. xxxx xxxx xxxx 7890)
+                elif (accnum_type == "accnum_bank"):
+                    accnum = "xxxxx-xxx" + accnum[-5:-1] # Keep the last 4 digit of the account number (e.g. xxxxx-xxx7890)
+            found_accnum = accnum
+            print("Account Number: %s" % accnum)
+    return found_accnum
 
 def _get_start_year(pdf_text, fi):
     print("Getting year...")
@@ -219,9 +226,10 @@ def _get_start_year(pdf_text, fi):
 
 def _get_opening_bal(pdf_text, fi):
     print("Getting opening balance...")
-    match = re.search(regexes[fi]['openbal'], pdf_text)
+    match = re.search(regexes[fi]['openbal'], pdf_text, re.IGNORECASE)
+    print(match)
     if (match and match.groupdict()['cr'] and '-' not in match.groupdict()['balance']):
-        balance = float("-" + match.groupdict()['balance'].replace('$', ''))
+        balance = float("-" + match.groupdict()['balance'].replace(',', '').replace('$', ''))
         print("Patched credit balance found for opening balance: %f" % balance)
         return balance
 
@@ -232,9 +240,9 @@ def _get_opening_bal(pdf_text, fi):
 
 def _get_closing_bal(pdf_text, fi):
     print("Getting closing balance...")
-    match = re.search(regexes[fi]['closingbal'], pdf_text)
+    match = re.search(regexes[fi]['closingbal'], pdf_text, re.IGNORECASE)
     if (match and match.groupdict()['cr'] and '-' not in match.groupdict()['balance']):
-        balance = float("-" + match.groupdict()['balance'].replace('$', ''))
+        balance = float("-" + match.groupdict()['balance'].replace(',', '').replace('$', ''))
         print("Patched credit balance found for closing balance: %f" % balance)
         return balance
     
