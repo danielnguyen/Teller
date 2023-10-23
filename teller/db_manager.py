@@ -7,7 +7,7 @@ def create_table(db_conn):
         CREATE TABLE transactions (
             id INTEGER AUTO_INCREMENT PRIMARY KEY,
             account_type varchar(255),
-            card_number varchar(255),
+            account_number varchar(255),
             timestamp varchar(255),
             description varchar(255),
             amount REAL
@@ -20,12 +20,12 @@ def add_transactions(db_conn, transactions):
         db_conn.execute(
             """
             INSERT INTO transactions
-            (account_type, card_number, timestamp, description, amount)
+            (account_type, account_number, timestamp, description, amount)
             VALUES 
             (?, ?, ?, ?, ?)
             """,
             [t.account_type.value,
-             t.card_number,
+             t.account_number,
              t.date,
              t.description,
              t.amount]
@@ -35,7 +35,7 @@ def get_transactions(db_conn):
     res = db_conn.execute(
         """
         SELECT account_type,
-               card_number,
+               account_number,
                timestamp,
                description,
                amount
