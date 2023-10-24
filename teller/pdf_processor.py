@@ -1,5 +1,7 @@
 import re
+import logging
 import pdfplumber
+import traceback
 
 from pathlib import Path
 from datetime import datetime, timedelta
@@ -8,6 +10,10 @@ from teller.model import Transaction, AccountType
 
 overrideDuplicates = True # True = assume all 'duplicate' transactions are valid
 debug = False # prints out one parsed PDF for you to manually test regex on
+interactiveMode = False # set True if Teller should prompt you when duplicates are found.
+
+logging.getLogger("pdfminer").setLevel(logging.WARNING) # Disable pdfminer (used by pdfplumber's) verbose logging
+logger = logging.getLogger("Teller")
 
 regexes = {
     'COMMON' : {
@@ -76,22 +82,20 @@ def get_transactions(data_directory):
         try: 
             result |= _parse_pdf(pdf_path)
         except Exception as e:
-            print("Error for %s" % pdf_path)
-            print(e)
+            logger.error("Error for " + str(pdf_path))
     return result 
 
 def _parse_pdf(pdf_path):
     result = set()
     text = ""
     with pdfplumber.open(pdf_path) as pdf:
-        print("------------------------------------------")
-        print(pdf_path)
+        logger.info("Processing PDF: " + str(pdf_path))
         for page in pdf.pages:
             text += page.extract_text(x_tolerance=1)
 
         if (debug):
             _detect_fi(text)
-            print(text)
+            logger.debug(text)
             exit()
 
         TARGET_FI = _detect_fi(text)
@@ -128,14 +132,14 @@ def _parse_pdf(pdf_path):
                     date = date + relativedelta(years = 1)
 
                 if (match_dict['cr']):
-                    print("Credit balance found in transaction: '%s'" % match_dict['amount'])
+                    logger.debug("Credit balance found in transaction: '" + match_dict['amount'] + "'")
                     amount = -float("-" + match_dict['amount'].replace('$', '').replace(',', ''))
                 else:
                     amount = -float(match_dict['amount'].replace('$', '').replace(',', ''))
-
+                
                 # checks description regex
                 if ('$' in match_dict['description'] and TARGET_FI != 'BMO'): # BMO doesn't have $'s in their descriptions, so this is safe 
-                    print("************" + match_dict['description'])
+                    logger.debug("************" + match_dict['description'])
                     newAmount = re.search(r'(?P<amount>-?\$[\d,]+\.\d{2}-?)(?P<cr>(\-|\s?CR))?', match_dict['description'])
                     amount = -float(newAmount['amount'].replace('$', '').replace(',', ''))
                     match_dict['description'] = match_dict['description'].split('$', 1)[0]
@@ -145,26 +149,34 @@ def _parse_pdf(pdf_path):
                                         str(date.date().isoformat()),
                                         match_dict['description'],
                                         amount)
+                
                 if (transaction in result):
                     if (overrideDuplicates):
+                        logger.debug("Override enabled, adding transaction to result set")
                         transaction.description = transaction.description + " 2"    
                         result.add(transaction)
                     else:
-                        prompt = input("Duplicate transaction found for %s, on %s for %f. Do you want to add this again? " % (transaction.description, transaction.date, transaction.amount)).lower()
-                        if (prompt == 'y'):
-                            transaction.description = transaction.description + " 2"    
-                            result.add(transaction)
-                        else:
-                            print("Ignoring!")
+                        logger.warning("Duplicate transaction found for " + transaction.description + " on " + transaction.date + " for " + transaction.amount)
+                        if (interactiveMode):
+                            prompt = input("Duplicate transaction found for %s, on %s for %f. Do you want to add this again? " % (transaction.description, transaction.date, transaction.amount)).lower()
+                            if (prompt == 'y'):
+                                transaction.description = transaction.description + " 2"    
+                                result.add(transaction)
+                            else:
+                                logger.info("Ignoring!")
                 else:
                     result.add(transaction)
 
-            _validate(closing_bal, opening_bal, result)
+            try:
+                _validate(closing_bal, opening_bal, result)
+            except:
+                traceback.print_exc()
         else:
-            print(f"Could not automatically detect financial institution for: {pdf_path} (skipping)")
+            logger.warning("Could not automatically detect financial institution for: " + pdf_path + " (skipping)")
     return result
 
 def _validate(closing_bal, opening_bal, transactions):
+    logger.info("Validating opening/closing balances against transactions...")
     # spend transactions are negative numbers.
     # net will most likely be a neg number unless your payments + cash back are bigger than spend
     # outflow is less than zero, so purchases
@@ -175,18 +187,19 @@ def _validate(closing_bal, opening_bal, transactions):
     net = round(sum([r.amount for r in transactions]), 2)
     outflow = round(sum([r.amount for r in transactions if r.amount < 0]), 2)
     inflow = round(sum([r.amount for r in transactions if r.amount > 0]), 2)
+    logger.debug("opbal: " + str(opening_bal) + ", clbal: " + str(closing_bal) + ", net: " + str(net))
     if round(opening_bal - closing_bal, 2) != net:
-        print("* the diff is: %f vs. %f" % (opening_bal - closing_bal, net))
-        print(f"* Opening reported at {opening_bal}")
-        print(f"* Closing reported at {closing_bal}")
-        print(f"* Transactions (net/inflow/outflow): {net} / {inflow} / {outflow}")
-        print("* Parsed transactions:")
+        logger.warning("* the diff is: " + str(opening_bal - closing_bal) + " vs. " + str(net))
+        logger.info("* Opening reported at " + str(opening_bal))
+        logger.info("* Closing reported at " + str(closing_bal))
+        logger.info("* Transactions (net/inflow/outflow): " + str(net) + "/" + str(inflow) + "/" + str(outflow))
+        logger.info("* Parsed transactions:")
         for t in sorted(list(transactions), key=lambda t: t.date):
-            print(t)
+            logger.info(t)
         raise AssertionError("Discrepancy found, bad parse :(. Not all transcations are accounted for, validate your transaction regex.")
 
 def _detect_fi(pdf_text):
-    print("Detecting financial institution from pdf...")
+    logger.info("Detecting financial institution from pdf...")
     found_fi = None
     for (fi, fi_regexes) in regexes.items():
         if not found_fi and 'fidetect' in fi_regexes:
@@ -196,11 +209,11 @@ def _detect_fi(pdf_text):
                 and (not fi.startswith('BMO') \
                      or (fi.startswith('BMO') and _get_start_year(pdf_text, fi))):
                 found_fi = fi
-                print(f"Found matching FI: {fi}")
+                logger.info("Found matching FI: " + fi)
     return found_fi
 
 def _get_account_number(pdf_text, censor=True):
-    print("Getting account number...")
+    logger.info("Getting account number...")
     found_accnum = None
     for (accnum_type, accnum_regex) in regexes['COMMON'].items():
         match = re.search(accnum_regex, pdf_text, re.IGNORECASE)
@@ -208,44 +221,43 @@ def _get_account_number(pdf_text, censor=True):
             accnum = match.groupdict()['account_number']
             if (censor):
                 if (accnum_type == "accnum_cc"):
-                    accnum = "xxxx xxxx xxxx " + accnum[-5:-1] # Keep the last part of the card number (e.g. xxxx xxxx xxxx 7890)
+                    accnum = "xxxx xxxx xxxx " + accnum[-4:] # Keep the last part of the card number (e.g. xxxx xxxx xxxx 7890)
                 elif (accnum_type == "accnum_bank"):
                     accnum = "xxxxx-xxx" + accnum[-5:-1] # Keep the last 4 digit of the account number (e.g. xxxxx-xxx7890)
             found_accnum = accnum
-            print("Account Number: %s" % accnum)
+            logger.debug("Account Number: " + accnum)
     return found_accnum
 
 def _get_start_year(pdf_text, fi):
-    print("Getting year...")
+    logger.info("Getting year...")
     match = re.search(regexes[fi]['startyear'], pdf_text, re.IGNORECASE)
     if (match and match.groupdict()['year']):
         year = int(match.groupdict()['year'].replace(', ', ''))
-        print("YEAR IS: %d" % year)
+        logger.debug("YEAR IS: " + str(year))
         return year
 
 
 def _get_opening_bal(pdf_text, fi):
-    print("Getting opening balance...")
+    logger.info("Getting opening balance...")
     match = re.search(regexes[fi]['openbal'], pdf_text, re.IGNORECASE)
-    print(match)
     if (match and match.groupdict()['cr'] and '-' not in match.groupdict()['balance']):
         balance = float("-" + match.groupdict()['balance'].replace(',', '').replace('$', ''))
-        print("Patched credit balance found for opening balance: %f" % balance)
+        logger.debug("Patched credit balance found for opening balance: " + balance)
         return balance
 
     balance = float(match.groupdict()['balance'].replace(',', '').replace('$', ''))
-    print("Opening balance: %f" % balance)
+    logger.debug("Opening balance: " + str(balance))
     return balance
 
 
 def _get_closing_bal(pdf_text, fi):
-    print("Getting closing balance...")
+    logger.info("Getting closing balance...")
     match = re.search(regexes[fi]['closingbal'], pdf_text, re.IGNORECASE)
     if (match and match.groupdict()['cr'] and '-' not in match.groupdict()['balance']):
         balance = float("-" + match.groupdict()['balance'].replace(',', '').replace('$', ''))
-        print("Patched credit balance found for closing balance: %f" % balance)
+        logger.debug("Patched credit balance found for closing balance: " + balance)
         return balance
     
     balance = float(match.groupdict()['balance'].replace(',', '').replace('$', '').replace(' ', ''))
-    print("Closing balance: %f" % balance)
+    logger.debug("Closing balance: " + str(balance))
     return balance
